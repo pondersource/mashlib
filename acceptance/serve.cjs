@@ -3,7 +3,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fixture = '@prefix foaf: <http://xmlns.com/foaf/0.1/>.\n@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.\n<#me> a foaf:Person, vcard:Individual; foaf:name "Playwright Pod profile"; vcard:fn "Playwright Pod profile".';
 http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.headers.origin === 'http://localhost:5001') {
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization, DPoP, Link, If-None-Match, Range');
+    res.setHeader('Access-Control-Expose-Headers', 'Link, Content-Type, ETag');
+    if (req.method === 'OPTIONS') { res.writeHead(204).end(); return; }
     if (req.url !== '/profile.ttl') { res.writeHead(404).end(); return; }
     res.setHeader('Content-Type', 'text/turtle');
     res.end(fixture);
