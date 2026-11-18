@@ -1,10 +1,15 @@
 const { test, expect } = require('@playwright/test');
 test('standalone production browser renders RDF from another origin', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', error => { errors.push(error.message); console.log('Browser error:', error.message); });
+    page.on('console', message => { if (message.type() === 'error') console.log('Browser console:', message.text()); });
     const target = 'http://localhost:5002/profile.ttl#me';
     const read = page.waitForResponse(response =>
         response.url() === target.split('#')[0] && response.request().method() === 'GET' && response.ok(),
+        { timeout: 15_000 },
     );
     await page.goto('/browse.html?uri=' + encodeURIComponent(target));
+    expect(errors, 'production bundle startup errors').toEqual([]);
     await read;
     await expect(page.locator('#uriField')).toHaveValue(target);
     await expect(page.getByText('Playwright Pod profile', { exact: true }).first()).toBeVisible();
