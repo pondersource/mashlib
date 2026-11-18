@@ -1,143 +1,30 @@
-name: CI
-
+name: Ponder Source browser checks
 on:
-  push:
-    branches:
-      - main
-      - staging
   pull_request:
-    branches:
-      - main
-      - staging
+  push:
+    branches: [main]
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
-  update-deps:
-    uses: SolidOS/solidos/.github/workflows/update-solidos-deps.yml@main
-    secrets: inherit
-
-  build:
-    needs: update-deps
+  browser:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [22, 24]
     steps:
-      # The update-deps job commits the updated package.json/package-lock.json to the head
-      # branch, but `needs` only orders the jobs: without an explicit ref the default
-      # checkout uses the SHA of the triggering event, so the build (and the artifact that
-      # later gets published) would still carry the pre-update dependencies.
-      # Build the branch that received the commit (PR head branch, or the pushed branch);
-      # fork PRs keep the default commit, as the updater deliberately does not commit there.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork && github.sha || github.head_ref) || github.ref_name }}
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '24'
+          cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm run bundlesize
-      - name: Save build
-        if: matrix.node-version == 22
-        uses: actions/upload-artifact@v7
-        with:
-          name: build
-          path: |
-            .
-            !node_modules
-          retention-days: 1
-
-  gh-pages:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: npm run build:ghpages
-      - uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: dist
-          destination_dir: dist
-
-  dependabot:
-    name: 'Dependabot'
-    needs: build # After the E2E and build jobs, if one of them fails, it won't merge the PR.
-    runs-on: ubuntu-latest
-    if: ${{ github.actor == 'dependabot[bot]' && github.event_name == 'pull_request'}} # Detect that the PR author is dependabot
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Enable auto-merge for Dependabot PRs
-        run: gh pr merge --auto --merge "$PR_URL" # Use Github CLI to merge automatically the PR
         env:
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-          
-  npm-publish-dev:
-    needs: build
-    permissions:
-      id-token: write
-      contents: read
-    uses: SolidOS/solidos/.github/workflows/publish-prerelease.yml@main
-    with:
-      node_version: 22
-
-  npm-publish-latest:
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write  # Required for OIDC
-      contents: read
-    steps:
-      - uses: actions/download-artifact@v8
+          PUBLIC_PATH: /
+          NODE_OPTIONS: --max-old-space-size=4096
+      - run: npm install --prefix acceptance --no-package-lock
+      - run: npx --prefix acceptance playwright install --with-deps chromium
+      - run: npm --prefix acceptance test
+      - uses: actions/upload-artifact@v4
+        if: failure()
         with:
-          name: build
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22 # for npm@latest
-          registry-url: 'https://registry.npmjs.org'
-      - name: Update npm to latest (required for OIDC)
-        run: npm install -g npm@latest
-      - name: Disable pre- and post-publish actions
-        run: 'sed -i -E "s/\"((pre|post)publish)/\"ignore:\1/" package.json'
-      - name: Publish to npm
-        if: github.actor != 'dependabot[bot]' && github.actor != 'dependabot-preview[bot]'
-        run: npm publish --tag latest
-
-  github-release:
-    needs: [npm-publish-latest]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Create GitHub release with generated notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="v$(node -p 'require("./package.json").version')"
-      
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists. Skipping."
-            exit 0
-          fi
-      
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin. Creating release from existing tag."
-            gh release create "$TAG" --verify-tag --generate-notes
-          else
-            echo "Creating tag and release $TAG from commit $GITHUB_SHA."
-            gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes
-          fi
+          name: mashlib-playwright-results
+          path: acceptance/test-results/
